@@ -152,3 +152,152 @@ test "isPrime" {
     defer m61.deinit();
     try std.testing.expect(try isPrime(&m61));
 }
+
+/// Legendre symbol: returns 1, -1, or 0
+pub fn legendreSymbol(a: *const Managed, p: *const Managed) !i2 {
+    const allocator = a.allocator;
+
+    // Compute a^((p-1)/2) mod p
+    var one = try Managed.initSet(allocator, 1);
+    defer one.deinit();
+
+    var p_minus_1 = try Managed.init(allocator);
+    defer p_minus_1.deinit();
+    try p_minus_1.sub(p, &one);
+
+    var exp = try Managed.init(allocator);
+    defer exp.deinit();
+    try exp.shiftRight(&p_minus_1, 1); // (p-1)/2
+
+    var result = try Managed.init(allocator);
+    defer result.deinit();
+    try powMod(&result, a, &exp, p);
+
+    if (result.eqlZero()) return 0;
+    if (result.toConst().orderAgainstScalar(1) == .eq) return 1;
+    return -1;
+}
+
+test "legendreSymbol" {
+    const ally = std.testing.allocator;
+
+    var a = try Managed.initSet(ally, 4);
+    defer a.deinit();
+    var p = try Managed.initSet(ally, 7);
+    defer p.deinit();
+    try std.testing.expectEqual(@as(i2, 1), try legendreSymbol(&a, &p));
+
+    try a.set(3);
+    try std.testing.expectEqual(@as(i2, -1), try legendreSymbol(&a, &p));
+}
+
+/// Modular square root via Tonelli-Shanks. Returns x where x^2 == a (mod p)
+/// Caller must verify a is a QR first (legendreSymbol == 1).
+pub fn sqrtMod(result: *Managed, a: *const Managed, p: *const Managed) !void {
+    const allocator = result.allocator;
+
+    var one = try Managed.initSet(allocator, 1);
+    defer one.deinit();
+    var two = try Managed.initSet(allocator, 2);
+    defer two.deinit();
+
+    // Factor out powers of 2: p-1 == 2^s * q
+    var p_minus_1 = try Managed.init(allocator);
+    defer p_minus_1.deinit();
+    try p_minus_1.sub(p, &one);
+
+    var q = try p_minus_1.clone();
+    defer q.deinit();
+    var s: usize = 0;
+    while (!q.isOdd()) {
+        try q.shiftRight(&q, 1);
+        s += 1;
+    }
+
+    // Find a quadratic non-residue z
+    var z = try Managed.initSet(allocator, 2);
+    defer z.deinit();
+    while (try legendreSymbol(&z, p) != -1) {
+        try z.add(&z, &one);
+    }
+
+    var m: usize = s;
+    var c = try Managed.init(allocator);
+    defer c.deinit();
+    try powMod(&c, &z, &q, p); // c = z^q mod p
+
+    var t = try Managed.init(allocator);
+    defer t.deinit();
+    try powMod(&t, a, &q, p); // t = a^q mod p
+
+    // r = a^((q+1)/2) mod p
+    var q_plus_1 = try Managed.init(allocator);
+    defer q_plus_1.deinit();
+    try q_plus_1.add(&q, &one);
+    var exp = try Managed.init(allocator);
+    defer exp.deinit();
+    try exp.shiftRight(&q_plus_1, 1);
+    try powMod(result, a, &exp, p);
+
+    // Temporaries for the loop
+    var tmp = try Managed.init(allocator);
+    defer tmp.deinit();
+    var qr = try Managed.init(allocator);
+    defer qr.deinit();
+    var b = try Managed.init(allocator);
+    defer b.deinit();
+    var pow_exp = try Managed.init(allocator);
+    defer pow_exp.deinit();
+
+    while (true) {
+        if (t.toConst().orderAgainstScalar(1) == .eq) break;
+
+        // Find least i such that t^(2^i) == 1 mod p
+        var i: usize = 1;
+        try tmp.copy(t.toConst());
+        while (i < m) {
+            try powMod(&tmp, &tmp, &tmp, p);
+            if (tmp.toConst().orderAgainstScalar(1) == .eq) break;
+            i += 1;
+        }
+
+        // b = c^(2^(m-i-1)) mod p
+        try pow_exp.set(1);
+        try pow_exp.shiftLeft(&pow_exp, m - i - 1);
+        try powMod(&b, &c, &two, p);
+
+        m = i;
+
+        // c = b^2 mod p
+        try powMod(&c, &b, &two, p);
+
+        // t = t * c mod p
+        try tmp.mul(&t, &c);
+        try qr.divFloor(&t, &tmp, p);
+
+        // result = result * b mod p
+        try tmp.mul(result, &b);
+        try qr.divFloor(result, &tmp, p);
+    }
+}
+
+test "sqrtMod" {
+    const ally = std.testing.allocator;
+
+    // sqrt(4) mod 7 should be 2 or 5
+    var a = try Managed.initSet(ally, 4);
+    defer a.deinit();
+    var p = try Managed.initSet(ally, 7);
+    defer p.deinit();
+    var result = try Managed.init(ally);
+    defer result.deinit();
+    try sqrtMod(&result, &a, &p);
+
+    // Verify: result^2 mod p == a
+    var two = try Managed.initSet(ally, 2);
+    defer two.deinit();
+    var check = try Managed.init(ally);
+    defer check.deinit();
+    try powMod(&check, &result, &two, &p);
+    try std.testing.expect(check.toConst().orderAgainstScalar(4) == .eq);
+}
