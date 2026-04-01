@@ -301,3 +301,56 @@ test "sqrtMod" {
     try powMod(&check, &result, &two, &p);
     try std.testing.expect(check.toConst().orderAgainstScalar(4) == .eq);
 }
+
+/// Find z such that z^k == 1 mod r and z != 1
+/// r must be prime and k must divide r-1.
+pub fn findKthRootOfUnity(result: *Managed, k: u64, r: *const Managed) !void {
+    const allocator = result.allocator;
+
+    var one = try Managed.initSet(allocator, 1);
+    defer one.deinit();
+    var r_minus_1 = try Managed.init(allocator);
+    defer r_minus_1.deinit();
+    try r_minus_1.sub(r, &one);
+
+    // exp = (r-1) / k
+    var k_big = try Managed.initSet(allocator, k);
+    defer k_big.deinit();
+    var exp = try Managed.init(allocator);
+    defer exp.deinit();
+    var rem = try Managed.init(allocator);
+    defer rem.deinit();
+    try exp.divFloor(&rem, &r_minus_1, &k_big);
+
+    // Try g = 2, 3, 4, ... until g^((r-1)/k) != 1 mod r
+    var g = try Managed.initSet(allocator, 2);
+    defer g.deinit();
+
+    while (true) {
+        try powMod(result, &g, &exp, r);
+        if (result.toConst().orderAgainstScalar(1) != .eq) return;
+        try g.add(&g, &one);
+    }
+}
+
+test "findKthRootOfUnity" {
+    const ally = std.testing.allocator;
+
+    // r = 13, k = 3. 3 | 12 so a cube root or unity exists.
+    var r = try Managed.initSet(ally, 13);
+    defer r.deinit();
+    var z = try Managed.init(ally);
+    defer z.deinit();
+    try findKthRootOfUnity(&z, 3, &r);
+
+    // Verify z^3 == 1 mod 13
+    var three = try Managed.initSet(ally, 3);
+    defer three.deinit();
+    var check = try Managed.init(ally);
+    defer check.deinit();
+    try powMod(&check, &z, &three, &r);
+    try std.testing.expect(check.toConst().orderAgainstScalar(1) == .eq);
+
+    // And z != 1
+    try std.testing.expect(z.toConst().orderAgainstScalar(1) != .eq);
+}
