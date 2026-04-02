@@ -30,15 +30,6 @@ pub fn main() !void {
     const y_str = try result.y.toString(ally, 10, .lower);
     defer ally.free(y_str);
 
-    std.debug.print("=== Pairing-friendly curve found ===\n", .{});
-    std.debug.print("k = {}\n", .{result.k});
-    std.debug.print("D = {}\n", .{result.D});
-    std.debug.print("j = {}\n", .{result.j});
-    std.debug.print("p = {s}\n", .{p_str});
-    std.debug.print("t = {s}\n", .{t_str});
-    std.debug.print("y = {s}\n", .{y_str});
-    std.debug.print("p bits = {}\n", .{result.p.bitCountAbs()});
-
     // Construct curve E: y^2 = x^3 + ax + b
     var a = try Managed.init(ally);
     defer a.deinit();
@@ -46,29 +37,95 @@ pub fn main() !void {
     defer b.deinit();
     try cp.constructCurveFromJ(&a, &b, result.j, &result.p);
 
+    // Compute group order n = p + 1 - t and cofactor h = n / r
+    var one = try Managed.initSet(ally, 1);
+    defer one.deinit();
+    var n = try Managed.init(ally);
+    defer n.deinit();
+    var tmp = try Managed.init(ally);
+    defer tmp.deinit();
+    try tmp.add(&result.p, &one);
+    try n.sub(&tmp, &result.t);
+
+    var h = try Managed.init(ally);
+    defer h.deinit();
+    var rem = try Managed.init(ally);
+    defer rem.deinit();
+    try h.divFloor(&rem, &n, &result.r);
+
+    // String conversions (decimal)
     const a_str = try a.toString(ally, 10, .lower);
     defer ally.free(a_str);
     const b_str = try b.toString(ally, 10, .lower);
     defer ally.free(b_str);
-    std.debug.print("\nE: y^2 = x^3 + {s}*x + {s}\n", .{ a_str, b_str });
+    const n_str = try n.toString(ally, 10, .lower);
+    defer ally.free(n_str);
+    const h_str = try h.toString(ally, 10, .lower);
+    defer ally.free(h_str);
 
-    // Verify r | p+1-t
-    var tmp = try Managed.init(ally);
-    defer tmp.deinit();
-    var one = try Managed.initSet(ally, 1);
-    defer one.deinit();
-    var check = try Managed.init(ally);
-    defer check.deinit();
-    var q = try Managed.init(ally);
-    defer q.deinit();
-    var rem = try Managed.init(ally);
-    defer rem.deinit();
+    // String conversions (hex)
+    const p_hex = try result.p.toString(ally, 16, .lower);
+    defer ally.free(p_hex);
+    const r_hex = try result.r.toString(ally, 16, .lower);
+    defer ally.free(r_hex);
+    const a_hex = try a.toString(ally, 16, .lower);
+    defer ally.free(a_hex);
+    const b_hex = try b.toString(ally, 16, .lower);
+    defer ally.free(b_hex);
+    const n_hex = try n.toString(ally, 16, .lower);
+    defer ally.free(n_hex);
+    const h_hex = try h.toString(ally, 16, .lower);
+    defer ally.free(h_hex);
+    const t_hex = try result.t.toString(ally, 16, .lower);
+    defer ally.free(t_hex);
 
-    try tmp.add(&result.p, &one);
-    try check.sub(&tmp, &result.t);
-    try q.divFloor(&rem, &check, &result.r);
+    // Dump
+    std.debug.print("========================================\n", .{});
+    std.debug.print("  Pairing-Friendly Elliptic Curve\n", .{});
+    std.debug.print("========================================\n\n", .{});
 
-    std.debug.print("\n=== Verification ===\n", .{});
-    std.debug.print("r | p+1-t: {}\n", .{rem.eqlZero()});
-    std.debug.print("p is prime: {}\n", .{try cp.isPrime(&result.p)});
+    std.debug.print("--- Cocks-Pinch parameters ---\n", .{});
+    std.debug.print("  embedding degree k = {}\n", .{result.k});
+    std.debug.print("  CM discriminant  D = {}\n", .{result.D});
+    std.debug.print("  j-invariant      j = {}\n", .{result.j});
+    std.debug.print("  Frobenius trace  t = {s}\n", .{t_str});
+    std.debug.print("                     = 0x{s}\n", .{t_hex});
+
+    std.debug.print("\n--- Curve: E(F_p): y^2 = x^3 + a*x + b ---\n", .{});
+
+    std.debug.print("\n  p  = {s}\n", .{p_str});
+    std.debug.print("     = 0x{s}\n", .{p_hex});
+    std.debug.print("     ({} bits)\n", .{result.p.bitCountAbs()});
+
+    std.debug.print("\n  a  = {s}\n", .{a_str});
+    std.debug.print("     = 0x{s}\n", .{a_hex});
+
+    std.debug.print("\n  b  = {s}\n", .{b_str});
+    std.debug.print("     = 0x{s}\n", .{b_hex});
+
+    std.debug.print("\n--- Group structure ---\n", .{});
+
+    std.debug.print("\n  #E(F_p) = p + 1 - t\n", .{});
+    std.debug.print("  n  = {s}\n", .{n_str});
+    std.debug.print("     = 0x{s}\n", .{n_hex});
+
+    std.debug.print("\n  subgroup order (secp256k1)\n", .{});
+    std.debug.print("  r  = {s}\n", .{r_str});
+    std.debug.print("     = 0x{s}\n", .{r_hex});
+    std.debug.print("     ({} bits)\n", .{result.r.bitCountAbs()});
+
+    std.debug.print("\n  cofactor h = n / r\n", .{});
+    std.debug.print("  h  = {s}\n", .{h_str});
+    std.debug.print("     = 0x{s}\n", .{h_hex});
+
+    std.debug.print("\n--- Security ---\n", .{});
+    std.debug.print("  embedding degree k = {}\n", .{result.k});
+    std.debug.print("  F_p^k size  ≈ 2^{}\n", .{result.p.bitCountAbs() * result.k});
+    std.debug.print("  rho security ≈ {}-bit (ECDLP)\n", .{result.r.bitCountAbs() / 2});
+    std.debug.print("  MOV security ≈ NFS on {}-bit field\n", .{result.p.bitCountAbs() * result.k});
+
+    std.debug.print("\n--- Verification ---\n", .{});
+    std.debug.print("  r | #E(F_p):  {}\n", .{rem.eqlZero()});
+    std.debug.print("  p is prime:   {}\n", .{try cp.isPrime(&result.p)});
+    std.debug.print("========================================\n", .{});
 }
