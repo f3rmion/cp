@@ -256,7 +256,7 @@ pub fn sqrtMod(result: *Managed, a: *const Managed, p: *const Managed) !void {
         var i: usize = 1;
         try tmp.copy(t.toConst());
         while (i < m) {
-            try powMod(&tmp, &tmp, &tmp, p);
+            try powMod(&tmp, &tmp, &two, p);
             if (tmp.toConst().orderAgainstScalar(1) == .eq) break;
             i += 1;
         }
@@ -264,7 +264,7 @@ pub fn sqrtMod(result: *Managed, a: *const Managed, p: *const Managed) !void {
         // b = c^(2^(m-i-1)) mod p
         try pow_exp.set(1);
         try pow_exp.shiftLeft(&pow_exp, m - i - 1);
-        try powMod(&b, &c, &two, p);
+        try powMod(&b, &c, &pow_exp, p);
 
         m = i;
 
@@ -353,4 +353,170 @@ test "findKthRootOfUnity" {
 
     // And z != 1
     try std.testing.expect(z.toConst().orderAgainstScalar(1) != .eq);
+}
+
+/// Modular inverse: result = a^(-1) mod m
+/// Uses Fermat's little theorem: a^(-1) = a^(m-2) mod m (m must be prime)
+pub fn modInverse(result: *Managed, a: *const Managed, m: *const Managed) !void {
+    const allocator = result.allocator;
+    var two = try Managed.initSet(allocator, 2);
+    defer two.deinit();
+    var exp = try Managed.init(allocator);
+    defer exp.deinit();
+    try exp.sub(m, &two); // m-2
+    try powMod(result, a, &exp, m);
+}
+
+/// Result of the Cocks-Pinch method
+pub const CocksPinchResult = struct {
+    p: Managed,
+    r: Managed,
+    t: Managed,
+    D: u64,
+    y: Managed,
+
+    pub fn deinit(self: *CocksPinchResult) void {
+        self.p.deinit();
+        self.r.deinit();
+        self.t.deinit();
+        self.y.deinit();
+    }
+};
+
+/// Cocks-Pinch method
+/// Find a prime p and trace t such that:
+///  - r is prime, k | r-1
+///  - t == z+1 mod r where z is a k-th root of unity
+///  - p = (t^2 + D*y^2) / 4 is prime
+///  - r | p + 1 - t
+pub fn cocksPinch(allocator: std.mem.Allocator, k: u64, r: *const Managed) !CocksPinchResult {
+    var one = try Managed.initSet(allocator, 1);
+    defer one.deinit();
+    var two = try Managed.initSet(allocator, 2);
+    defer two.deinit();
+    var four = try Managed.initSet(allocator, 4);
+    defer four.deinit();
+
+    var q = try Managed.init(allocator);
+    defer q.deinit();
+    var rem = try Managed.init(allocator);
+    defer rem.deinit();
+    var tmp = try Managed.init(allocator);
+    defer tmp.deinit();
+
+    // Step 1: find k-th root of unity z mod r
+    var z = try Managed.init(allocator);
+    defer z.deinit();
+    try findKthRootOfUnity(&z, k, r);
+
+    // Step 2: t = z + 1 (mod r) - just take the representation in [0, r)
+    var t = try Managed.init(allocator);
+    try t.add(&z, &one);
+    // Reduce mod r (in case z+1 == r)
+    try q.divFloor(&rem, &t, r);
+    try t.copy(rem.toConst());
+
+    // Step 3: try small CM discriminants D = 1, 2, 3, ...
+    // Need: -D is a QR mod r, and p = (t^2 + D*y^2)/4 is prime
+    //
+    // From the CM equation and r | p+1-t:
+    //  4p = t^2 + D*y^2
+    //  4(t-1) === t^2 + D*y^2 (mod r) [since p == t-1 mod r]
+    //  D*y^2 === -(t-2)^2 (mod r)
+    //  y === (t-2) / sqrt(-D) (mod r)
+
+    var t_minus_2 = try Managed.init(allocator);
+    defer t_minus_2.deinit();
+    try t_minus_2.sub(&t, &two);
+
+    var neg_D = try Managed.init(allocator);
+    defer neg_D.deinit();
+    var D_big = try Managed.init(allocator);
+    defer D_big.deinit();
+    var sqrt_neg_D = try Managed.init(allocator);
+    defer sqrt_neg_D.deinit();
+    var inv = try Managed.init(allocator);
+    defer inv.deinit();
+    var y = try Managed.init(allocator);
+    var p = try Managed.init(allocator);
+
+    var D: u64 = 1;
+    while (D < 1000) : (D += 1) {
+        // Compute -D mod r
+        try D_big.set(D);
+        try tmp.sub(r, &D_big); // tmp = r - D
+        try q.divFloor(&neg_D, &tmp, r); // neg_D = (-D) mod r
+
+        // Check if -D is a QR mod r
+        if (try legendreSymbol(&neg_D, r) != 1) continue;
+
+        // sqrt(-D) mod r
+        try sqrtMod(&sqrt_neg_D, &neg_D, r);
+
+        // y = (t - 2) * sqrt(-D)^(-1) mod r
+        try modInverse(&inv, &sqrt_neg_D, r);
+        try tmp.mul(&t_minus_2, &inv);
+        try q.divFloor(&y, &tmp, r);
+
+        // p = (t^2 + D * y^2) / 4
+        try tmp.mul(&t, &t); // t^2
+        try p.mul(&y, &y); // y^2
+        try p.mul(&p, &D_big); // D * y^2
+        try p.add(&p, &tmp); // t^2 + D*y^2
+
+        // Check divisible by 4
+        try q.divFloor(&rem, &p, &four);
+        if (!rem.eqlZero()) continue;
+        try p.copy(q.toConst()); // p = (t^2 + D*y^2) / 4
+
+        // Check p is prime
+        if (p.toConst().orderAgainstScalar(2) == .lt) continue;
+        if (try isPrime(&p)) {
+            return CocksPinchResult{
+                .p = p,
+                .r = try r.toConst().toManaged(allocator),
+                .t = t,
+                .D = D,
+                .y = y,
+            };
+        }
+    }
+
+    // Cleanup
+    p.deinit();
+    y.deinit();
+    t.deinit();
+    return error.NoCurveFound;
+}
+
+test "cocksPinch" {
+    const ally = std.testing.allocator;
+
+    // Use a small prime r where k=6 divides r-1
+    // r = 13: r-1 = 12, 6 | 12
+    var r = try Managed.initSet(ally, 13);
+    defer r.deinit();
+
+    var result = try cocksPinch(ally, 6, &r);
+    defer result.deinit();
+
+    // Verify r | p + 1 - t
+    var tmp = try Managed.init(ally);
+    defer tmp.deinit();
+    var one = try Managed.initSet(ally, 1);
+    defer one.deinit();
+    var check = try Managed.init(ally);
+    defer check.deinit();
+    var q = try Managed.init(ally);
+    defer q.deinit();
+    var rem = try Managed.init(ally);
+    defer rem.deinit();
+
+    try tmp.add(&result.p, &one); // p+1
+    try check.sub(&tmp, &result.t); // p+1-t
+    try q.divFloor(&rem, &check, &r);
+    try std.testing.expect(rem.eqlZero());
+
+    // Verify p is prime
+    try std.testing.expect(try isPrime(&result.p));
 }
