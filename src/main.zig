@@ -79,53 +79,188 @@ pub fn main() !void {
     const t_hex = try result.t.toString(ally, 16, .lower);
     defer ally.free(t_hex);
 
-    // Dump
-    std.debug.print("========================================\n", .{});
-    std.debug.print("  Pairing-Friendly Elliptic Curve\n", .{});
-    std.debug.print("========================================\n\n", .{});
+    const p_bits = result.p.bitCountAbs();
+    const r_bits = result.r.bitCountAbs();
+    const verified_r_divides = rem.eqlZero();
+    const verified_p_prime = try cp.isPrime(&result.p);
 
-    std.debug.print("--- Cocks-Pinch parameters ---\n", .{});
-    std.debug.print("  embedding degree k = {}\n", .{result.k});
-    std.debug.print("  CM discriminant  D = {}\n", .{result.D});
-    std.debug.print("  j-invariant      j = {}\n", .{result.j});
-    std.debug.print("  Frobenius trace  t = {s}\n", .{t_str});
-    std.debug.print("                     = 0x{s}\n", .{t_hex});
+    // === Build curve.txt content ===
+    const txt = try std.fmt.allocPrint(ally,
+        \\========================================
+        \\  Pairing-Friendly Elliptic Curve
+        \\  Cocks-Pinch with CM construction
+        \\========================================
+        \\
+        \\--- Cocks-Pinch parameters ---
+        \\  embedding degree k = {[k]}
+        \\  CM discriminant  D = {[D]}
+        \\  j-invariant      j = {[j]}
+        \\  Frobenius trace  t = {[t_dec]s}
+        \\                     = 0x{[t_hex]s}
+        \\
+        \\--- Curve: E(F_p): y^2 = x^3 + a*x + b ---
+        \\
+        \\  p  = {[p_dec]s}
+        \\     = 0x{[p_hex]s}
+        \\     ({[p_bits]} bits)
+        \\
+        \\  a  = {[a_dec]s}
+        \\     = 0x{[a_hex]s}
+        \\
+        \\  b  = {[b_dec]s}
+        \\     = 0x{[b_hex]s}
+        \\
+        \\--- Group structure ---
+        \\
+        \\  #E(F_p) = p + 1 - t
+        \\  n  = {[n_dec]s}
+        \\     = 0x{[n_hex]s}
+        \\
+        \\  subgroup order (secp256k1)
+        \\  r  = {[r_dec]s}
+        \\     = 0x{[r_hex]s}
+        \\     ({[r_bits]} bits)
+        \\
+        \\  cofactor h = n / r
+        \\  h  = {[h_dec]s}
+        \\     = 0x{[h_hex]s}
+        \\
+        \\--- Security ---
+        \\  embedding degree k = {[k2]}
+        \\  F_p^k size    ≈ 2^{[ext_bits]}
+        \\  rho security  ≈ {[rho_bits]}-bit (ECDLP)
+        \\  MOV security  ≈ NFS on {[mov_bits]}-bit field
+        \\
+        \\--- Verification ---
+        \\  r | #E(F_p):  {[v_r]}
+        \\  p is prime:   {[v_p]}
+        \\========================================
+        \\
+    , .{
+        .k = result.k,
+        .D = result.D,
+        .j = result.j,
+        .t_dec = t_str,
+        .t_hex = t_hex,
+        .p_dec = p_str,
+        .p_hex = p_hex,
+        .p_bits = p_bits,
+        .a_dec = a_str,
+        .a_hex = a_hex,
+        .b_dec = b_str,
+        .b_hex = b_hex,
+        .n_dec = n_str,
+        .n_hex = n_hex,
+        .r_dec = r_str,
+        .r_hex = r_hex,
+        .r_bits = r_bits,
+        .h_dec = h_str,
+        .h_hex = h_hex,
+        .k2 = result.k,
+        .ext_bits = p_bits * result.k,
+        .rho_bits = r_bits / 2,
+        .mov_bits = p_bits * result.k,
+        .v_r = verified_r_divides,
+        .v_p = verified_p_prime,
+    });
+    defer ally.free(txt);
 
-    std.debug.print("\n--- Curve: E(F_p): y^2 = x^3 + a*x + b ---\n", .{});
+    // === Build curve.json content ===
+    const json = try std.fmt.allocPrint(ally,
+        \\{{
+        \\  "curve": {{
+        \\    "equation": "y^2 = x^3 + a*x + b",
+        \\    "p": {{
+        \\      "decimal": "{[p_dec]s}",
+        \\      "hex": "0x{[p_hex]s}",
+        \\      "bits": {[p_bits]}
+        \\    }},
+        \\    "a": {{
+        \\      "decimal": "{[a_dec]s}",
+        \\      "hex": "0x{[a_hex]s}"
+        \\    }},
+        \\    "b": {{
+        \\      "decimal": "{[b_dec]s}",
+        \\      "hex": "0x{[b_hex]s}"
+        \\    }}
+        \\  }},
+        \\  "group": {{
+        \\    "order": {{
+        \\      "decimal": "{[n_dec]s}",
+        \\      "hex": "0x{[n_hex]s}"
+        \\    }},
+        \\    "subgroup_order": {{
+        \\      "decimal": "{[r_dec]s}",
+        \\      "hex": "0x{[r_hex]s}",
+        \\      "bits": {[r_bits]},
+        \\      "source": "secp256k1"
+        \\    }},
+        \\    "cofactor": {{
+        \\      "decimal": "{[h_dec]s}",
+        \\      "hex": "0x{[h_hex]s}"
+        \\    }}
+        \\  }},
+        \\  "pairing": {{
+        \\    "embedding_degree": {[k]},
+        \\    "cm_discriminant": {[D]},
+        \\    "j_invariant": {[j]},
+        \\    "frobenius_trace": {{
+        \\      "decimal": "{[t_dec]s}",
+        \\      "hex": "0x{[t_hex]s}"
+        \\    }}
+        \\  }},
+        \\  "security": {{
+        \\    "extension_field_bits": {[ext_bits]},
+        \\    "rho_security_bits": {[rho_bits]},
+        \\    "mov_field_bits": {[mov_bits]}
+        \\  }},
+        \\  "verification": {{
+        \\    "r_divides_group_order": {[v_r]},
+        \\    "p_is_prime": {[v_p]}
+        \\  }}
+        \\}}
+        \\
+    , .{
+        .p_dec = p_str,
+        .p_hex = p_hex,
+        .p_bits = p_bits,
+        .a_dec = a_str,
+        .a_hex = a_hex,
+        .b_dec = b_str,
+        .b_hex = b_hex,
+        .n_dec = n_str,
+        .n_hex = n_hex,
+        .r_dec = r_str,
+        .r_hex = r_hex,
+        .r_bits = r_bits,
+        .h_dec = h_str,
+        .h_hex = h_hex,
+        .k = result.k,
+        .D = result.D,
+        .j = result.j,
+        .t_dec = t_str,
+        .t_hex = t_hex,
+        .ext_bits = p_bits * result.k,
+        .rho_bits = r_bits / 2,
+        .mov_bits = p_bits * result.k,
+        .v_r = verified_r_divides,
+        .v_p = verified_p_prime,
+    });
+    defer ally.free(json);
 
-    std.debug.print("\n  p  = {s}\n", .{p_str});
-    std.debug.print("     = 0x{s}\n", .{p_hex});
-    std.debug.print("     ({} bits)\n", .{result.p.bitCountAbs()});
+    // === Write files ===
+    {
+        const file = try std.fs.cwd().createFile("curve.txt", .{});
+        defer file.close();
+        try file.writeAll(txt);
+    }
+    {
+        const file = try std.fs.cwd().createFile("curve.json", .{});
+        defer file.close();
+        try file.writeAll(json);
+    }
 
-    std.debug.print("\n  a  = {s}\n", .{a_str});
-    std.debug.print("     = 0x{s}\n", .{a_hex});
-
-    std.debug.print("\n  b  = {s}\n", .{b_str});
-    std.debug.print("     = 0x{s}\n", .{b_hex});
-
-    std.debug.print("\n--- Group structure ---\n", .{});
-
-    std.debug.print("\n  #E(F_p) = p + 1 - t\n", .{});
-    std.debug.print("  n  = {s}\n", .{n_str});
-    std.debug.print("     = 0x{s}\n", .{n_hex});
-
-    std.debug.print("\n  subgroup order (secp256k1)\n", .{});
-    std.debug.print("  r  = {s}\n", .{r_str});
-    std.debug.print("     = 0x{s}\n", .{r_hex});
-    std.debug.print("     ({} bits)\n", .{result.r.bitCountAbs()});
-
-    std.debug.print("\n  cofactor h = n / r\n", .{});
-    std.debug.print("  h  = {s}\n", .{h_str});
-    std.debug.print("     = 0x{s}\n", .{h_hex});
-
-    std.debug.print("\n--- Security ---\n", .{});
-    std.debug.print("  embedding degree k = {}\n", .{result.k});
-    std.debug.print("  F_p^k size  ≈ 2^{}\n", .{result.p.bitCountAbs() * result.k});
-    std.debug.print("  rho security ≈ {}-bit (ECDLP)\n", .{result.r.bitCountAbs() / 2});
-    std.debug.print("  MOV security ≈ NFS on {}-bit field\n", .{result.p.bitCountAbs() * result.k});
-
-    std.debug.print("\n--- Verification ---\n", .{});
-    std.debug.print("  r | #E(F_p):  {}\n", .{rem.eqlZero()});
-    std.debug.print("  p is prime:   {}\n", .{try cp.isPrime(&result.p)});
-    std.debug.print("========================================\n", .{});
+    // Also print to stderr
+    std.debug.print("{s}", .{txt});
+    std.debug.print("\nWrote curve.txt and curve.json\n", .{});
 }
